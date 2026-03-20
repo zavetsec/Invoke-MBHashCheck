@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>ZavetSec - MalwareBazaar Sample Report</title>
+<style>
+:root{--bg:#090b0f;--bg2:#0d1017;--bg3:#131820;--border:#1c2333;--text:#e6edf3;--dim:#8b949e;--accent:#79c0ff;--mal:#ff6b6b;--nf:#8b949e;--warn:#f0c050;--green:#56d364;--font:'Consolas','Courier New',monospace}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:13px;line-height:1.5}
+.header{background:var(--bg2);border-bottom:2px solid #ff6b6b33;padding:22px 30px}
+.logo{font-size:22px;font-weight:900;letter-spacing:4px;margin-bottom:4px;color:#ffd700;text-shadow:0 0 8px #ffd70099,0 0 18px #ffaa0066,0 0 32px #ff880033;font-family:'Consolas','Courier New',monospace}
+.logo em{color:#ff6b35;font-style:normal;font-weight:900;text-shadow:0 0 8px #ff6b3599,0 0 18px #ff440066}
+.powered{color:var(--dim);font-size:10px;margin-bottom:8px}
+.powered a{color:var(--dim);text-decoration:none;opacity:.6}
+.meta{color:var(--dim);font-size:11px}
+.meta strong{color:var(--text)}
+.statsbar{display:flex;gap:10px;padding:14px 30px;background:var(--bg2);border-bottom:1px solid var(--border);flex-wrap:wrap}
+.sc{background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:10px 18px;text-align:center;min-width:90px}
+.sc .n{font-size:26px;font-weight:bold}
+.sc .l{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:1px}
+.n-mal{color:var(--mal)}.n-nf{color:var(--nf)}.n-total{color:var(--accent)}.n-warn{color:var(--warn)}
+.container{padding:22px 30px}
+.sec-title{color:var(--accent);font-size:11px;text-transform:uppercase;letter-spacing:2px;margin-bottom:12px;padding-bottom:6px;border-bottom:1px solid var(--border)}
+.notice{background:#f0c05018;border:1px solid #f0c05044;border-radius:6px;padding:10px 16px;margin-bottom:16px;color:var(--warn);font-size:12px}
+.notice strong{color:#f8d060}
+table{width:100%;border-collapse:collapse;background:var(--bg2);border-radius:8px;overflow:hidden;border:1px solid var(--border)}
+thead tr{background:var(--bg3);border-bottom:2px solid var(--border)}
+th{padding:9px 12px;text-align:left;color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:1px;font-weight:normal}
+td{padding:9px 12px;border-bottom:1px solid var(--border);vertical-align:top}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:rgba(121,192,255,.03)}
+.status-mal td{border-left:3px solid var(--mal)}
+.status-nf td{border-left:3px solid #333a47}
+.badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:bold;letter-spacing:.5px}
+.badge-mal{background:rgba(255,107,107,.15);color:var(--mal);border:1px solid rgba(255,107,107,.3)}
+.badge-nf{background:rgba(139,148,158,.12);color:var(--nf);border:1px solid rgba(139,148,158,.25)}
+.hash-cell{font-family:monospace;font-size:12px}
+.vt-link{color:var(--accent);text-decoration:none}
+.vt-link:hover{text-decoration:underline}
+.htag{display:inline-block;background:var(--bg3);border:1px solid var(--border);border-radius:3px;padding:0 4px;font-size:10px;color:var(--dim);margin-left:6px}
+.fname{color:var(--text)}
+.sig{color:var(--warn);font-size:11px}
+.dim{color:var(--dim)}
+.small{font-size:11px}
+.intel-cell{color:var(--dim);font-size:11px;max-width:200px}
+.tag{display:inline-block;background:rgba(255,107,107,.12);border:1px solid rgba(255,107,107,.2);border-radius:3px;padding:1px 6px;font-size:10px;color:#ff6b6b88;margin:1px}
+.filter-bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
+.fbtn{background:var(--bg3);border:1px solid var(--border);border-radius:4px;color:var(--dim);padding:4px 12px;font-family:var(--font);font-size:11px;cursor:pointer;transition:all .15s}
+.fbtn:hover,.fbtn.active{border-color:var(--accent);color:var(--accent);background:rgba(121,192,255,.07)}
+#srch{background:var(--bg3);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:4px 10px;font-family:var(--font);font-size:11px;width:220px}
+#srch:focus{outline:none;border-color:var(--accent)}
+.footer{padding:14px 30px;border-top:1px solid var(--border);color:var(--dim);font-size:10px;text-align:center}
+.footer a{color:#ffd700;text-decoration:none;font-weight:bold;opacity:.7;text-shadow:0 0 6px #ffd70044}
+details summary{cursor:pointer;color:var(--accent);font-size:10px;margin-top:4px;user-select:none}
+.hash-detail{margin-top:5px;background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:7px;font-size:10px}
+.hl{color:var(--dim)}.hv{color:var(--text);word-break:break-all}
+</style>
+</head>
+<body>
+<div class="header">
+  <div class="logo">ZAVET<em>SEC</em></div>
+  <div class="powered">MalwareBazaar Hash Checker &mdash; abuse.ch API &mdash; Auth-Key required &mdash; free at auth.abuse.ch &nbsp;|&nbsp; <a href="https://github.com/zavetsec" target="_blank">github.com/zavetsec</a></div>
+  <div class="meta">Generated: <strong>2026-03-20 15:36:42</strong> &nbsp;|&nbsp; Total hashes: <strong>14</strong> &nbsp;|&nbsp; Source: <strong>MalwareBazaar (abuse.ch)</strong> &nbsp;|&nbsp; <em style="color:var(--warn)">&#9888; Sample report — demonstration only</em></div>
+</div>
+<div class="statsbar">
+  <div class="sc"><div class="n n-total">14</div><div class="l">Total</div></div>
+  <div class="sc"><div class="n n-mal">12</div><div class="l">Malicious</div></div>
+  <div class="sc"><div class="n n-nf">2</div><div class="l">Not in DB</div></div>
+  <div class="sc"><div class="n n-warn">0</div><div class="l">Errors</div></div>
+</div>
+<div class="container">
+  <div class="notice"><strong>&#9888; Note:</strong> NOT IN DB means the hash was not found in MalwareBazaar — this does not mean the file is clean. Cross-reference with additional threat intelligence sources for a complete picture.</div>
+  <div class="sec-title">Hash Analysis Results &mdash; MalwareBazaar</div>
+  <div class="filter-bar">
+    <button class="fbtn active" onclick="ft('ALL')">All (14)</button>
+    <button class="fbtn" onclick="ft('mal')">&#9888; Malicious (12)</button>
+    <button class="fbtn" onclick="ft('nf')">? Not in DB (2)</button>
+    <input type="text" id="srch" placeholder="Search hash / filename..." oninput="fs()">
+  </div>
+  <table id="ht">
+    <thead><tr><th>Hash</th><th>Verdict</th><th>File Info</th><th>Signature</th><th>Tags</th><th>First Seen</th><th>Intel</th></tr></thead>
+    <tbody id="tb">
+      <tr class="status-mal">
+        <td class="hash-cell"><a href="https://bazaar.abuse.ch/sample/c46cd09676c6393ba3530f03135d1484ffad998b307347f9d4581393da164252/" target="_blank" class="vt-link" title="c46cd09676c6393ba3530f03135d1484ffad998b307347f9d4581393da164252">c46cd096...da164252</a><span class="htag">SHA256</span><details><summary>All Hashes</summary><div class="hash-detail"><span class="hl">SHA256:</span> <span class="hv">c46cd09676c6393ba3530f03135d1484ffad998b307347f9d4581393da164252</span><br><span class="hl">SHA1:</span> <span class="hv">a4b2c1d3e5f6789012345678901234567890abcd</span><br><span class="hl">MD5:</span> <span class="hv">1a2b3c4d5e6f7890abcdef1234567890</span></div></details></td>
+        <td><span class="badge badge-mal">&#9888; MALICIOUS</span></td>
+        <td><span class="fname">Axe_Starter.exe</span><br><span class="dim small">exe | 245.3 KB</span></td>
+        <td><span class="sig">ACRStealer</span></td>
+        <td><span class="tag">stealer</span><span class="tag">exe</span><span class="tag">amatera</span></td>
+        <td><span class="dim small">2025-12-13 07:32:54</span></td>
+        <td class="intel-cell">Downloads: 147 | Uploads: 1</td>
+      </tr>
+      <tr class="status-mal">
+        <td class="hash-cell"><a href="https://bazaar.abuse.ch/sample/af0cbe1cb2efa531b2592f0f208cb7b28c33f2d3a423725646d01c951022c4be/" target="_blank" class="vt-link" title="af0cbe1cb2efa531b2592f0f208cb7b28c33f2d3a423725646d01c951022c4be">af0cbe1c...022c4be</a><span class="htag">SHA256</span></td>
+        <td><span class="badge badge-mal">&#9888; MALICIOUS</span></td>
+        <td><span class="fname">BraveBrowserSetup-BRV014.exe</span><br><span class="dim small">exe | 4.1 MB</span></td>
+        <td><span class="sig">CoinMiner</span></td>
+        <td><span class="tag">exe</span><span class="tag">signed</span><span class="tag">autorun-reg</span></td>
+        <td><span class="dim small">2025-03-16 19:35:54</span></td>
+        <td class="intel-cell">Downloads: 472 | Uploads: 1</td>
+      </tr>
+      <tr class="status-mal">
+        <td class="hash-cell"><a href="https://bazaar.abuse.ch/sample/ac931f9419235283f509bbed222918c34b72cfd8f29c83af5ad35d249f42c41c/" target="_blank" class="vt-link" title="ac931f9419235283f509bbed222918c34b72cfd8f29c83af5ad35d249f42c41c">ac931f94...f42c41c</a><span class="htag">SHA256</span></td>
+        <td><span class="badge badge-mal">&#9888; MALICIOUS</span></td>
+        <td><span class="fname">cbe6a0a06ffe4254df06daff8f77136c.exe</span><br><span class="dim small">exe | 189.7 KB</span></td>
+        <td><span class="sig">Petya</span></td>
+        <td><span class="tag">ransomware</span><span class="tag">mbr</span></td>
+        <td><span class="dim small">2024-12-06 09:00:39</span></td>
+        <td class="intel-cell">ClamAV: Trojan.KillMBRNET | Downloads: 535</td>
+      </tr>
+      <tr class="status-mal">
+        <td class="hash-cell"><a href="https://bazaar.abuse.ch/sample/b648c7224ac754c0c54788d8cd5b9ac2cc6ef73b66ba4ec16ecd0abdf7de19ec/" target="_blank" class="vt-link" title="b648c7224ac754c0c54788d8cd5b9ac2cc6ef73b66ba4ec16ecd0abdf7de19ec">b648c722...f7de19ec</a><span class="htag">SHA256</span></td>
+        <td><span class="badge badge-mal">&#9888; MALICIOUS</span></td>
+        <td><span class="fname">SWIFT COPY.JS</span><br><span class="dim small">js | 12.4 KB</span></td>
+        <td><span class="sig">AgentTesla</span></td>
+        <td><span class="tag">js</span><span class="tag">dropper</span></td>
+        <td><span class="dim small">2026-03-12 10:41:40</span></td>
+        <td class="intel-cell">ClamAV: JS.Muldrop | Downloads: 141</td>
+      </tr>
+      <tr class="status-mal">
+        <td class="hash-cell"><a href="https://bazaar.abuse.ch/sample/4fb8b2fa2c8f4c234c2c82997a37bc48b65ba346efbbdb3f48c9d8e0f846ae07/" target="_blank" class="vt-link" title="4fb8b2fa2c8f4c234c2c82997a37bc48b65ba346efbbdb3f48c9d8e0f846ae07">4fb8b2fa...846ae07</a><span class="htag">SHA256</span></td>
+        <td><span class="badge badge-mal">&#9888; MALICIOUS</span></td>
+        <td><span class="fname">COTIZACIÓN DE LA MÁQUINA.xls</span><br><span class="dim small">xls | 67.2 KB</span></td>
+        <td><span class="sig">Exploit.CVE-2017-11882</span></td>
+        <td><span class="tag">exploit</span><span class="tag">xls</span><span class="tag">macro</span></td>
+        <td><span class="dim small">2026-03-12 10:41:17</span></td>
+        <td class="intel-cell">ClamAV: Exploit.CVE-2017-11882 | Downloads: 149</td>
+      </tr>
+      <tr class="status-mal">
+        <td class="hash-cell"><a href="https://bazaar.abuse.ch/sample/a21094a7fd28bdb11165a341441dc223aa1c4fc02b3c87f7cbd22dfa6dc43b43/" target="_blank" class="vt-link" title="a21094a7fd28bdb11165a341441dc223aa1c4fc02b3c87f7cbd22dfa6dc43b43">a21094a7...dc43b43</a><span class="htag">SHA256</span></td>
+        <td><span class="badge badge-mal">&#9888; MALICIOUS</span></td>
+        <td><span class="fname">Nakaz_MO_perevirka_mayna.zip</span><br><span class="dim small">zip | 891.0 KB</span></td>
+        <td><span class="sig">command_and_control</span></td>
+        <td><span class="tag">lnk</span><span class="tag">zip</span><span class="tag">ukraine</span></td>
+        <td><span class="dim small">2026-03-12 10:14:23</span></td>
+        <td class="intel-cell">ClamAV: EvilLNK | Downloads: 182</td>
+      </tr>
+      <tr class="status-nf">
+        <td class="hash-cell"><span title="0000000000000000000000000000000000000000000000000000000000000001">00000000...00000001</span><span class="htag">SHA256</span></td>
+        <td><span class="badge badge-nf">? NOT IN DB</span></td>
+        <td><span class="dim">-</span></td>
+        <td><span class="dim">-</span></td>
+        <td><span class="dim">-</span></td>
+        <td><span class="dim">-</span></td>
+        <td class="intel-cell">Not in MalwareBazaar database</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div id="tfSection" style="margin-top:28px;">
+    <div class="sec-title">ThreatFox IOC Intelligence &mdash; C2 / Payload Indicators <span style="color:var(--dim);font-size:10px;font-weight:normal;">(shown when C2 data available)</span></div>
+    <table>
+      <thead><tr><th>IOC</th><th>Type</th><th>Threat</th><th>Malware</th><th>Confidence</th><th>Geo / ASN</th><th>First Seen</th><th>Reporter</th></tr></thead>
+      <tbody>
+        <tr>
+          <td class="hash-cell"><a href="https://www.shodan.io/host/185.220.101.47" target="_blank" class="vt-link">185.220.101.47:443</a></td>
+          <td><span class="htag">ip:port</span></td>
+          <td class="dim small">botnet_cc</td>
+          <td><span class="sig">ACRStealer</span></td>
+          <td style="color:var(--mal);font-weight:bold;">85%</td>
+          <td class="dim small"><img src="https://flagcdn.com/16x12/de.png" style="margin-right:5px;vertical-align:middle;">Germany, Frankfurt</td>
+          <td class="dim small">2025-12-14 08:22:11</td>
+          <td class="dim small">abuse_ch</td>
+        </tr>
+        <tr>
+          <td class="hash-cell"><a href="https://threatfox.abuse.ch/browse.php?search=ioc%3Astealer.example.com" target="_blank" class="vt-link">c2panel.example[.]com</a></td>
+          <td><span class="htag">domain</span></td>
+          <td class="dim small">payload_delivery</td>
+          <td><span class="sig">ACRStealer</span></td>
+          <td style="color:var(--warn);font-weight:bold;">50%</td>
+          <td class="dim small"><span class="dim">-</span></td>
+          <td class="dim small">2025-12-14 08:22:11</td>
+          <td class="dim small">Cryptolaemus</td>
+        </tr>
+      </tbody>
+    </table>
+    <div style="margin-top:8px;color:var(--dim);font-size:11px;">&#9432; This section appears only when ThreatFox has IOC data for a MALICIOUS hash. IPs link to Shodan. Confidence ≥75% shown in red, ≥50% in yellow.</div>
+  </div>
+</div>
+<div class="footer">
+  <a href="https://github.com/zavetsec" target="_blank">ZavetSec</a>
+  &mdash; MalwareBazaar Hash Checker v2.0 &nbsp;|&nbsp;
+  <a href="https://bazaar.abuse.ch" target="_blank" style="color:var(--dim)">bazaar.abuse.ch</a> &nbsp;|&nbsp;
+  Data provided by <a href="https://abuse.ch" target="_blank" style="color:var(--dim)">abuse.ch</a>
+</div>
+<script>
+var rows=null;
+function gr(){if(!rows)rows=Array.from(document.querySelectorAll('#tb tr'));return rows;}
+function ft(s){document.querySelectorAll('.fbtn').forEach(function(b){b.classList.remove('active');});event.target.classList.add('active');var q=document.getElementById('srch').value.toLowerCase();gr().forEach(function(r){var ms=(s==='ALL')||r.classList.contains('status-'+s);var mq=!q||r.textContent.toLowerCase().includes(q);r.style.display=(ms&&mq)?'':'none';});}
+function fs(){var q=document.getElementById('srch').value.toLowerCase();gr().forEach(function(r){r.style.display=(!q||r.textContent.toLowerCase().includes(q))?'':'none';});}
+</script>
+</body>
+</html>
