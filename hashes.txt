@@ -1,0 +1,47 @@
+# ZavetSec - Invoke-MBHashCheck
+# Test IOC file - updated March 2026
+# Sources: MalwareBazaar + ThreatFox confirmed entries
+#
+# NOTE ON THREATFOX ENRICHMENT:
+# ThreatFox search_hash works only for hashes explicitly submitted to ThreatFox
+# as sha256_hash IOC type by analysts. This is separate from MalwareBazaar.
+# Most MB hashes will NOT appear in ThreatFox - that is expected behavior.
+# ThreatFox enrichment fires when analysts submitted the hash + C2 context.
+#
+# HASHES ONLY - no malicious files included
+
+# ── Confirmed in both MB and ThreatFox (sha256_hash IOC type) ─
+# These were verified as sha256_hash entries in ThreatFox database
+
+# AgentTesla - ThreatFox IOC #4118 (sha256_hash payload)
+5dd92be22d005624d865ddf07402eb852426fc97baa52bbc58316690d41adb74
+
+# Dridex - ThreatFox IOC #71873 (sha256_hash payload)
+7301cf845a5f2557cc7272a1d8e3fb8506f2b8edeca646d22f683c7ecbbe4814
+
+# ── Confirmed in MB (recent, should have signature + tags) ────
+
+# ACRStealer (2025-12) - Axe_Starter.exe, stealer tags
+c46cd09676c6393ba3530f03135d1484ffad998b307347f9d4581393da164252
+
+# CoinMiner / fake Brave Browser (2025-03)
+af0cbe1cb2efa531b2592f0f208cb7b28c33f2d3a423725646d01c951022c4be
+
+# Triada Android (2025-02)
+2de70ca737c1f4602517c555ddd54165432cf231ffc0e21fb2e23b9dd14e7fb4
+
+# Petya (2024-12)
+ac931f9419235283f509bbed222918c34b72cfd8f29c83af5ad35d249f42c41c
+
+# ── Recent from MB export 2026-03-12 (MALICIOUS, fresh) ───────
+
+6439834bec1cc530b12b1d821a509561efdd43048ecfb183939fe00a11a3c7dd
+8afdf5e18e026ac8748a431bf913265851a4a1a3ebd397c8f74d1a78fe19fec2
+19c9f613abead95d6612364e5e5749034bff29624294fa8bd1e7700c50864dff
+df643bcbb3b16aededf7f78aab20f7c16cc1abd2567952eec2e575061bb4427b
+b648c7224ac754c0c54788d8cd5b9ac2cc6ef73b66ba4ec16ecd0abdf7de19ec
+4fb8b2fa2c8f4c234c2c82997a37bc48b65ba346efbbdb3f48c9d8e0f846ae07
+a21094a7fd28bdb11165a341441dc223aa1c4fc02b3c87f7cbd22dfa6dc43b43
+
+# ── Negative test - must return NOT_FOUND ─────────────────────
+0000000000000000000000000000000000000000000000000000000000000001
