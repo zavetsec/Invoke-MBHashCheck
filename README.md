@@ -290,7 +290,7 @@ Use **[Invoke-ZavetSecTriage](https://github.com/zavetsec/Invoke-ZavetSecTriage)
 # Run triage on a suspect host (local or remote via PsExec)
 .\Invoke-ZavetSecTriage.ps1 -OutputDir "C:\Triage\HOST01"
 
-# Result: triage package including process_hashes.txt
+# Result: triage package including hashes.txt and hashes.csv
 ```
 
 ### Step 2 — Feed the hashes directly into MBHashCheck
@@ -299,7 +299,7 @@ Use **[Invoke-ZavetSecTriage](https://github.com/zavetsec/Invoke-ZavetSecTriage)
 # Check all running process hashes against MalwareBazaar + ThreatFox
 .\Invoke-MBHashCheck.ps1 `
     -ApiKey "YOUR_KEY" `
-    -HashFile "C:\Triage\HOST01\process_hashes.txt" `
+    -HashFile "C:\Triage\HOST01\Forensics\hashes.txt" `
     -Quiet `
     -OutputDir "C:\Triage\HOST01"
 ```
@@ -325,7 +325,7 @@ $out  = "C:\IR\$host"
 
 # 2. Check hashes
 $hits = .\Invoke-MBHashCheck.ps1 -ApiKey $key `
-    -HashFile "$out\process_hashes.txt" `
+    -HashFile "$out\Forensics\hashes.txt" `
     -PassThru -Quiet |
     Where-Object Status -eq "MALICIOUS"
 
