@@ -51,7 +51,7 @@ Hash list (file / directory scan / inline)
             │
             ▼
     ┌─────────────────┐
-    │  MalwareBazaar  │  ──►  MALICIOUS  ──►  ┌──────────────────┐
+    │  MalwareBazaar  │  ──►  MALICIOUS  ──►   ┌──────────────────┐
     │   get_info API  │                        │  ThreatFox       │
     └─────────────────┘                        │  search_hash API │
             │                                  └──────┬───────────┘
@@ -154,6 +154,9 @@ Self-contained `.html` — no server, no internet required to open.
 The HTML report is self-contained — open it anywhere, no internet required.
 
 > 📎 **[Sample report →](sample_report.html)** *(open in browser to see live filtering)*
+>
+> <img width="1597" height="878" alt="image" src="https://github.com/user-attachments/assets/7316d46e-0155-4267-8689-ca03ea21fc44" />
+
 
 **Summary header:**
 
