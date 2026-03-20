@@ -31,6 +31,19 @@ During incident response, analysts manually:
 
 ---
 
+## Why not just use the browser?
+
+| Approach | Time for 50 hashes | Output | C2 context | Automatable |
+|---|---|---|---|---|
+| MalwareBazaar GUI | ~2 hours | Notes | No | No |
+| ThreatFox GUI | ~2 hours separate | Notes | Manual | No |
+| VirusTotal GUI | ~2 hours + rate limits | Notes | No | No |
+| **Invoke-MBHashCheck** | **~2-5 minutes** | **HTML report** | **Automatic** | **Yes** |
+
+> VirusTotal is great for single-file analysis. This tool is for **bulk triage** — when you have a list of suspicious hashes and need answers fast, in a format you can share.
+
+---
+
 ## What it does
 
 ```
@@ -74,37 +87,54 @@ Hash list (file / directory scan / inline)
 
 ## Console output
 
+```powershell
+.\Invoke-MBHashCheck.ps1 -ApiKey "YOUR_KEY" -HashFile "hashes.txt" -Quiet
+```
+
 ```
  ______          _____
 |___  /         /  ___|
    / /  __ ___  \ `--. ___  ___
   / /  / _` \ \  `--. / _ \/ __|
 ./ /__| (_| |> \/\__/ /  __/ (__
-\_____/\__,_/_/\_\____/ \___|\___|
+\_____/\__,_/_/\_\____/ \___|\___| 
    ZavetSec - MalwareBazaar Hash Checker v2.0
    Powered by abuse.ch  |  Free key: auth.abuse.ch
+----------------------------------------------------
 
-[1/4] ed01ebfbc9eb5bbea545... (SHA256) ... [MALICIOUS]  WannaCry  | ransomware, wannacry
-  [TF] Querying ThreatFox for related IOCs...
-      Found 3 IOC(s) | 3 IP/port
-[2/4] 5dd92be22d005624d865... (SHA256) ... [MALICIOUS]  AgentTesla  | exe, stealer
-  [TF] Querying ThreatFox for related IOCs...
-      No IOCs found in ThreatFox
-[3/4] af0cbe1cb2efa531b259... (SHA256) ... [MALICIOUS]  CoinMiner  | exe
+[07:32:11] [INFO] Loaded 14 hash(es) for analysis.
+[07:32:11] [INFO] Source: MalwareBazaar (abuse.ch) | Auth-Key: ....e043
+
+  [1/14] 6439834bec1cc530b12b1d821a509561... (SHA256) ... [MALICIOUS]  command_and_control  | elf
   [TF] Querying ThreatFox for related IOCs...
       No IOCs found in ThreatFox
-[4/4] 0000000000000000000a... (SHA256) ... [NOT_FOUND]
+
+  [2/14] c46cd09676c6393ba3530f03135d1484... (SHA256) ... [MALICIOUS]  ACRStealer  | exe, stealer
+  [TF] Querying ThreatFox for related IOCs...
+      No IOCs found in ThreatFox
+
+  [3/14] af0cbe1cb2efa531b2592f0f208cb7b2... (SHA256) ... [MALICIOUS]  CoinMiner  | exe, signed
+  [4/14] ac931f9419235283f509bbed222918c3... (SHA256) ... [MALICIOUS]  Petya  | exe
+  [5/14] 2de70ca737c1f4602517c555ddd54165... (SHA256) ... [MALICIOUS]  Triada  | apk
+  ...
+  [14/14] 0000000000000000000000000000001... (SHA256) ... [NOT_FOUND]
 
 ------------------------------------------------------
-  Total:          4
-  MALICIOUS:      3
-  NOT IN DB:      1
-  ThreatFox hits: 1
-  TF IOCs total:  3
-  HTML report saved: .\MB_HashReport_20260320_153642.html
+[07:41:15] [HEAD] Analysis complete.
+  Total:          14
+  MALICIOUS:      12
+  NOT IN DB:       2
+  Errors:          0
+  ThreatFox hits:  0
+  TF IOCs total:   0
+
+[07:41:15] [OK] HTML report saved: .\MB_HashReport_20260320_074115.html
 ```
 
+> `-Quiet` suppresses NOT_FOUND rows. Use `-PassThru` to pipe results into further automation.
+
 ---
+
 
 ## HTML Report
 
@@ -116,6 +146,27 @@ Self-contained `.html` — no server, no internet required to open.
 - **ThreatFox IOC Intelligence** *(appears when C2 data is available)* — IOC type, malware family, confidence %, country flag + city, ASN, Shodan link per IP
 - **Filter buttons** — All / Malicious / Not in DB / Suspicious
 - **Full-text search** — instant filter across all rows
+
+---
+
+## Report Preview
+
+The HTML report is self-contained — open it anywhere, no internet required.
+
+> 📎 **[Sample report →](sample_report.html)** *(open in browser to see live filtering)*
+
+**Summary header:**
+
+```
+┌──────────┬──────────┬──────────┬──────────┐
+│  Total   │ Malicious│ Not in DB│  Errors  │
+│    14    │    12    │    2     │    0     │
+└──────────┴──────────┴──────────┴──────────┘
+```
+
+**Hash table columns:** Hash (clickable → MalwareBazaar) · Verdict badge · File name · Type · Signature · Tags · First seen · Intel (ClamAV + download counts)
+
+**ThreatFox section** *(shown when C2 data is available)*: IOC · Type · Threat · Malware family · Confidence % · GeoIP with country flag · ASN · Shodan link
 
 ---
 
@@ -207,7 +258,7 @@ ed01ebfbc9eb5bbea545af4d01bf5f1071661840480439c6e5babe8e080e41aa
 
 > **NOT_FOUND ≠ Clean.** MalwareBazaar only indexes confirmed malware samples that have been submitted. A file absent from the database may still be malicious. Cross-reference with additional threat intelligence sources.
 
-**ThreatFox enrichment** fires on MALICIOUS hits when the hash was explicitly submitted to ThreatFox as an IOC by a researcher. Most ThreatFox IOCs are IP:port and domain entries — hash-type IOCs are less common but provide the richest C2 context when present.
+**ThreatFox enrichment** fires on MALICIOUS hits when the hash was explicitly submitted to ThreatFox as an IOC by a researcher. In practice, most hashes return "No IOCs found" — this is expected and correct. Hash-type IOCs are rare in ThreatFox; when present they provide C2 IPs/domains with confidence level and GeoIP. Note: ThreatFox expires IOCs older than 6 months, so older samples will not return results even if they were in the database previously.
 
 ---
 
@@ -316,6 +367,28 @@ Planned features for future releases:
 - [ ] **MISP integration** — push results to MISP instance
 
 Contributions and feature requests welcome via [Issues](https://github.com/zavetsec/Invoke-MBHashCheck/issues).
+
+---
+
+## Getting started as contributor
+
+The repo uses a single `main` branch. When submitting PRs:
+
+```bash
+git clone https://github.com/zavetsec/Invoke-MBHashCheck
+cd Invoke-MBHashCheck
+
+# Make your changes
+# Test with PSScriptAnalyzer locally:
+Invoke-ScriptAnalyzer -Path .\Invoke-MBHashCheck.ps1 -Severity Warning,Error
+
+# Commit with a descriptive message
+git add .
+git commit -m "feat: add JSON export format"
+git push origin main
+```
+
+Issues and feature requests welcome → [open an issue](https://github.com/zavetsec/Invoke-MBHashCheck/issues)
 
 ---
 
