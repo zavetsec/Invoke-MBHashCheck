@@ -50,7 +50,7 @@ Hash list (file / directory scan / inline)
             │
             ▼
     ┌─────────────────┐
-    │  MalwareBazaar  │  ──►  MALICIOUS  ──►  ┌──────────────────┐
+    │  MalwareBazaar  │  ──►  MALICIOUS  ──►   ┌──────────────────┐
     │   get_info API  │                        │  ThreatFox       │
     └─────────────────┘                        │  search_hash API │
             │                                  └──────┬───────────┘
