@@ -223,6 +223,86 @@ No modules to install. No dependencies. Runs on any Windows machine with PowerSh
 
 ---
 
+## DFIR Workflow — Process Triage
+
+One of the most powerful use cases for this tool is **live process triage** during incident response.
+
+### The scenario
+
+You suspect a machine is compromised. You need to quickly answer:
+> *"Are any running processes known malware?"*
+
+### Step 1 — Collect process hashes with ZavetSecTriage
+
+Use **[Invoke-ZavetSecTriage](https://github.com/zavetsec/Invoke-ZavetSecTriage)** — a companion tool that collects running process hashes, network connections, loaded modules, and persistence artifacts into a structured DFIR package.
+
+```powershell
+# Run triage on a suspect host (local or remote via PsExec)
+.\Invoke-ZavetSecTriage.ps1 -OutputDir "C:\Triage\HOST01"
+
+# Result: triage package including process_hashes.txt
+```
+
+### Step 2 — Feed the hashes directly into MBHashCheck
+
+```powershell
+# Check all running process hashes against MalwareBazaar + ThreatFox
+.\Invoke-MBHashCheck.ps1 `
+    -ApiKey "YOUR_KEY" `
+    -HashFile "C:\Triage\HOST01\process_hashes.txt" `
+    -Quiet `
+    -OutputDir "C:\Triage\HOST01"
+```
+
+`-Quiet` shows only MALICIOUS hits — clean processes are suppressed.
+
+### Step 3 — Review the report
+
+Open the generated HTML — every MALICIOUS process is flagged with:
+- Malware family name
+- ClamAV vendor detections
+- ThreatFox C2 IPs / domains (if available) with GeoIP
+
+### Full pipeline example
+
+```powershell
+$key = "YOUR_KEY"
+$host = "WORKSTATION-042"
+$out  = "C:\IR\$host"
+
+# 1. Collect
+.\Invoke-ZavetSecTriage.ps1 -ComputerName $host -OutputDir $out
+
+# 2. Check hashes
+$hits = .\Invoke-MBHashCheck.ps1 -ApiKey $key `
+    -HashFile "$out\process_hashes.txt" `
+    -PassThru -Quiet |
+    Where-Object Status -eq "MALICIOUS"
+
+# 3. Instant verdict
+if ($hits) {
+    Write-Host "COMPROMISE CONFIRMED: $($hits.Count) malicious process(es)" -ForegroundColor Red
+    $hits | Select-Object Hash, Signature, Tags, TFIOCs | Format-Table
+} else {
+    Write-Host "No known malware in running processes" -ForegroundColor Green
+}
+```
+
+### Why this combination works
+
+| What you get | ZavetSecTriage | Invoke-MBHashCheck |
+|---|---|---|
+| Running process hashes | ✅ Collects | — |
+| Network connections | ✅ Collects | — |
+| Persistence artifacts | ✅ Collects | — |
+| Malware family ID | — | ✅ MalwareBazaar |
+| C2 infrastructure | — | ✅ ThreatFox + GeoIP |
+| Self-contained report | ✅ HTML | ✅ HTML |
+
+> Both tools are built to the same conventions — PS 5.1 compatible, no dependencies, dark HTML reports, PsExec/remote friendly. They are designed to work together as part of the **ZavetSec DFIR toolkit**.
+
+---
+
 ## Roadmap
 
 Planned features for future releases:
