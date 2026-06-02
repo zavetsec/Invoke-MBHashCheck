@@ -1,46 +1,42 @@
 # Changelog
 
 All notable changes to Invoke-MBHashCheck are documented here.
+Format based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [2.0] — 2026-03-20
+## [2.1]
+
+### Security
+- HTML-escape all API-derived fields (file names, tags, signatures, ThreatFox values) before rendering into the report, preventing markup injection from hostile sample names.
+- Build the ThreatFox JSON via `ConvertTo-Json` instead of manual string concatenation, ensuring correct escaping of quotes, backslashes and control characters.
+- Neutralize any literal `</script>` in injected data so it cannot close the script block early.
 
 ### Added
-- **ThreatFox integration** — `search_hash` lookup on every MALICIOUS hit via ThreatFox API
-- **GeoIP enrichment** — Country, city, ISP, ASN for C2 IPs via ip-api.com (no key required)
-- **ThreatFox HTML section** — "ThreatFox IOC Intelligence" table in report with country flags, Shodan links, confidence color-coding
-- `-ScanDirectory` parameter — auto-hash all files in a folder before lookup
-- `-Recurse` switch — recurse into subdirectories when scanning
-- `-Quiet` switch — suppress NOT_FOUND output, show only MALICIOUS in console
-- `-PassThru` switch — return result objects to the PowerShell pipeline
-- `-MaxRetries` / `-RetryDelaySeconds` — automatic retry on transient network errors
-- Native PowerShell progress bar (`Write-Progress`)
-- TF IOC count in final summary (`ThreatFox hits` / `TF IOCs total`)
-- `Get-Prop` module-level helper for safe `PSObject.Properties` access under `StrictMode`
-
-### Fixed
-- `Signature` extraction: fallback chain — `signature` → `popular_threat_classification.suggested_threat_label` → first YARA rule name
-- `Tags` extraction: fallback via `vendor_intel.ANY.RUN.malware_family`
-- `Get-Prop` moved out of `try` block — was causing PS 5.1 scope issues resulting in all fields returning N/A
-- ThreatFox hash lookup now uses SHA256 → MD5 → SHA1 → original hash fallback chain
-- Removed `&nbsp;` artifact from FileType table cell
-- Removed all Cyrillic from PowerShell executable code (UTF-8 BOM + CRLF encoding)
+- Interactive `.txt` file-path prompt when no hashes are supplied (paste or drag-and-drop the path; Enter falls through to manual entry).
 
 ### Changed
-- User-Agent updated to `ZavetSec-MBHashCheck/2.0 (github.com/zavetsec)`
-- HTML report logo: gold glowing ZavetSec branding
-- GitHub link added to report footer and header subtitle
-- Script version bumped to 2.0
+- Force TLS 1.2 at startup for older Windows / PowerShell 5.1.
+- Write the report as UTF-8 without BOM via `System.IO.File::WriteAllText` (avoids BOM and non-ASCII mangling from `Out-File -Encoding UTF8`).
+- Clean ASCII banner (no escape-character artifacts).
 
----
+### Fixed
+- A rejected Auth-Key or network error no longer aborts the whole run; every failure path returns a populated result and a report is always written.
+- GeoIP requests are paced under the ip-api free-tier limit (45/min) and auto-disable on HTTP 429 with a logged warning instead of failing silently.
+- Default missing ThreatFox `confidence_level` to `0` and guard the integer cast, preventing malformed report JSON.
+- Replaced a no-op quote-escaping routine that could break the ThreatFox table.
 
-## [1.0] — 2025-03-15
+## [2.0]
 
 ### Added
-- Initial release
-- Hash lookup against MalwareBazaar API (MD5 / SHA1 / SHA256)
-- Input from file, parameter array, or interactive console prompt
-- Dark-themed HTML report with filter buttons and full-text search
-- Auth-Key authentication via `Auth-Key` HTTP header
-- Safe property access via `PSObject.Properties` under `Set-StrictMode -Version Latest`
-- UTF-8 BOM + CRLF encoding for full PS 5.1 Windows compatibility
-- Rate limiting delay between requests
+- ThreatFox IOC enrichment (`search_hash`) on MALICIOUS hits — C2 IPs / domains with confidence level.
+- GeoIP enrichment for IP-type IOCs (country, city, ASN, ISP, Shodan link).
+- `-ScanDirectory` / `-Recurse` to auto-hash files in a directory.
+- `-Quiet`, `-MaxRetries`, `-RetryDelaySeconds`, `-PassThru` parameters.
+- Signature fallbacks (popular_threat_classification, first YARA rule) and tag fallback (vendor_intel / ANY.RUN).
+- Extended console summary (ThreatFox hits, total IOCs) and progress bar.
+
+## [1.0]
+
+### Added
+- Initial release: MalwareBazaar `get_info` hash lookup for MD5 / SHA1 / SHA256.
+- Dark-themed self-contained HTML report with filtering and search.
+- File, inline, and interactive hash input.

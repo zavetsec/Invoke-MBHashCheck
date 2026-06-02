@@ -1,29 +1,34 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
 .SYNOPSIS
     ZavetSec - MalwareBazaar Hash Checker
-    Hash lookup against MalwareBazaar (abuse.ch) - free key at auth.abuse.ch
+    Bulk hash triage against MalwareBazaar (abuse.ch) with ThreatFox C2
+    enrichment and GeoIP. Free key at auth.abuse.ch.
 
 .DESCRIPTION
-    Checks MD5/SHA1/SHA256 hashes against the MalwareBazaar API.
-    Requires a free Auth-Key from auth.abuse.ch.
-    Outputs results to console and generates a dark-themed HTML report.
+    Checks MD5/SHA1/SHA256 hashes against the MalwareBazaar API, enriches
+    confirmed hits with ThreatFox IOC intelligence (C2 IPs / domains) and
+    GeoIP data (ip-api.com). Outputs to console and a self-contained
+    dark-themed HTML report. Requires a free Auth-Key from auth.abuse.ch.
+
+.PARAMETER ApiKey
+    MalwareBazaar / ThreatFox Auth-Key (free at auth.abuse.ch). Prompted if omitted.
 
 .PARAMETER HashFile
-    Path to a text file containing hashes (one per line)
+    Path to a text file containing hashes (one per line, # comments allowed)
 
 .PARAMETER Hashes
     Array of hashes to check
 
-.PARAMETER OutputDir
-    Direktory dlya HTML-otcheta (default: tekushchaya direktory)
-
 .PARAMETER ScanDirectory
-    Scan all files in a directory and compute their hashes automatically.
+    Scan all files in a directory and compute their SHA256 automatically.
     Combine with -Recurse to include subdirectories.
 
 .PARAMETER Recurse
     Recurse into subdirectories when using -ScanDirectory.
+
+.PARAMETER OutputDir
+    Directory for the HTML report (default: current directory)
 
 .PARAMETER MaxRetries
     Number of retry attempts on transient errors (default: 3).
@@ -32,7 +37,7 @@
     Seconds to wait between retries (default: 5).
 
 .PARAMETER Quiet
-    Suppress NOT_FOUND and CLEAN output - show only MALICIOUS results.
+    Suppress NOT_FOUND output - show only MALICIOUS / ERROR results in console.
 
 .PARAMETER PassThru
     Return result objects to the pipeline for further scripting.
@@ -41,16 +46,17 @@
     .\Invoke-MBHashCheck.ps1 -ApiKey "YOUR_KEY" -HashFile "hashes.txt"
 
 .EXAMPLE
-    .\Invoke-MBHashCheck.ps1 -ApiKey "YOUR_KEY" -Hashes "abc123...","def456..."
-
-.EXAMPLE
     .\Invoke-MBHashCheck.ps1 -ApiKey "YOUR_KEY" -ScanDirectory "C:\Suspicious" -Recurse -Quiet
 
 .EXAMPLE
-    .\Invoke-MBHashCheck.ps1 -ApiKey "YOUR_KEY" -HashFile "iocs.txt" -PassThru | Where-Object Status -eq "MALICIOUS"
+    .\Invoke-MBHashCheck.ps1 -ApiKey "YOUR_KEY" -HashFile "iocs.txt" -PassThru |
+        Where-Object Status -eq "MALICIOUS" | Export-Csv hits.csv -NoTypeInformation
+
+.EXAMPLE
+    .\Invoke-MBHashCheck.ps1   # interactive: prompts for key, then file path or manual entry
 
 .NOTES
-    ZavetSec | MalwareBazaar API: https://bazaar.abuse.ch/api/
+    ZavetSec | MalwareBazaar API: https://bazaar.abuse.ch/api/ | ThreatFox: https://threatfox.abuse.ch
     Supports MD5, SHA1, SHA256.
     NOT IN DB does not mean clean - MalwareBazaar only contains known malware samples.
 #>
@@ -66,7 +72,6 @@ param(
     [Parameter(Mandatory = $false)]
     [string[]]$Hashes = @(),
 
-    # Scan all files in a directory and hash them automatically
     [Parameter(Mandatory = $false)]
     [string]$ScanDirectory = "",
 
@@ -76,18 +81,15 @@ param(
     [Parameter(Mandatory = $false)]
     [string]$OutputDir = (Get-Location).Path,
 
-    # Retry on transient errors (network issues, rate limits)
     [Parameter(Mandatory = $false)]
     [int]$MaxRetries = 3,
 
     [Parameter(Mandatory = $false)]
     [int]$RetryDelaySeconds = 5,
 
-    # Only show MALICIOUS and SUSPICIOUS results in console
     [Parameter(Mandatory = $false)]
     [switch]$Quiet,
 
-    # Return result objects to pipeline (for scripting)
     [Parameter(Mandatory = $false)]
     [switch]$PassThru
 )
@@ -95,30 +97,45 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+# Force TLS 1.2 - abuse.ch refuses older protocols, and PS 5.1 on older
+# Windows (2012R2 / 2016) may not negotiate it by default.
+try {
+    [Net.ServicePointManager]::SecurityProtocol = `
+        [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+} catch { }
+
 # ============================================================
 # CONST
 # ============================================================
-$SCRIPT_VERSION = "2.0"
+$SCRIPT_VERSION = "2.1"
 $MB_API_URL     = "https://mb-api.abuse.ch/api/v1/"
-
 $TF_API_URL     = "https://threatfox-api.abuse.ch/api/v1/"
-$DELAY_MS       = 1000   # 1 sec between requests - being polite
+$GEOIP_URL      = "http://ip-api.com/json"
+$DELAY_MS       = 1000   # 1 sec between MB requests - being polite
+$GEOIP_DELAY_MS = 1500   # ip-api free tier = 45 req/min -> >=1334ms apart
+$UA             = "ZavetSec-MBHashCheck/$SCRIPT_VERSION (github.com/zavetsec)"
+
+# ip-api free tier is rate limited (45/min). If we hit 429 we stop trying
+# GeoIP for the rest of the run instead of silently failing every call.
+$script:GeoIPDisabled = $false
 
 # ============================================================
 # HELPERS
 # ============================================================
 function Write-Banner {
-    $banner = @"
- ______          _____           
-|___  /         /  ___|          
-   / /  __ ___  \ `--. ___  ___ 
-  / /  / _` \ \  `--. / _ \/ __|
-./ /__| (_| |> \/\__/ /  __/ (__ 
-\_____/\__,_/_/\_\____/ \___|\___|
-   ZavetSec - MalwareBazaar Hash Checker v$SCRIPT_VERSION
-   Powered by abuse.ch  |  Free key: auth.abuse.ch
-"@
+    # Single-quoted here-string: backticks and $ are literal here, so the
+    # ASCII art is not mangled by PowerShell escape processing.
+    $banner = @'
+ ______               _    _____           
+|___  /              | |  / ____|          
+   / / __ ___   _____| |_| (___   ___  ___ 
+  / / / _` \ \ / / _ \ __|\___ \ / _ \/ __|
+ / /_| (_| |\ V /  __/ |_ ____) |  __/ (__ 
+/_____\__,_| \_/ \___|\__|_____/ \___|\___|
+'@
     Write-Host $banner -ForegroundColor Cyan
+    Write-Host "   ZavetSec - MalwareBazaar Hash Checker v$SCRIPT_VERSION" -ForegroundColor Cyan
+    Write-Host "   MalwareBazaar + ThreatFox + GeoIP | Free key: auth.abuse.ch" -ForegroundColor Cyan
     Write-Host ("-" * 54) -ForegroundColor DarkGray
 }
 
@@ -155,14 +172,63 @@ function Get-HashType {
     }
 }
 
-# ============================================================
-# HELPERS - SAFE PROPERTY ACCESS (StrictMode compatible)
-# ============================================================
+# Safe property extraction - PSObject.Properties avoids StrictMode errors.
 function Get-Prop {
     param($obj, [string]$name, [string]$default = "N/A")
     $p = $obj.PSObject.Properties[$name]
-    if ($p -and $p.Value -ne $null -and "$($p.Value)" -ne "") { return "$($p.Value)" }
+    if ($p -and $null -ne $p.Value -and "$($p.Value)" -ne "") { return "$($p.Value)" }
     return $default
+}
+
+# Extract HTTP status code from an error record (works on PS 5.1 WebException
+# and PS 7 HttpResponseException). Returns 0 when there is no HTTP response.
+function Get-HttpStatus {
+    param($ErrorRecord)
+    $sc = 0
+    try {
+        $resp = $ErrorRecord.Exception.PSObject.Properties["Response"]
+        if ($resp -and $resp.Value) {
+            $scp = $resp.Value.PSObject.Properties["StatusCode"]
+            if ($scp -and $null -ne $scp.Value) { $sc = [int]$scp.Value }
+        }
+    } catch { $sc = 0 }
+    return $sc
+}
+
+# HTML-escape any value that originates from an API (file names, tags,
+# signatures, ThreatFox fields etc. are attacker-influenced). Self-contained.
+function ConvertTo-HtmlSafe {
+    param($Text)
+    if ($null -eq $Text) { return "" }
+    $s = [string]$Text
+    $s = $s -replace '&', '&amp;'
+    $s = $s -replace '<', '&lt;'
+    $s = $s -replace '>', '&gt;'
+    $s = $s -replace '"', '&quot;'
+    $s = $s -replace "'", '&#39;'
+    return $s
+}
+
+# Load and validate hashes from a text file into the target list (dedup).
+# Returns the number of valid hashes added.
+function Import-HashFile {
+    param(
+        [string]$Path,
+        [System.Collections.Generic.List[string]]$Target
+    )
+    $added = 0
+    $lines = Get-Content -LiteralPath $Path -ErrorAction Stop |
+        Where-Object { $_.Trim() -ne "" -and $_ -notmatch "^\s*#" }
+    foreach ($line in $lines) {
+        $h = $line.Trim().ToLower()
+        if (Test-HashFormat $h) {
+            if (-not $Target.Contains($h)) { $Target.Add($h); $added++ }
+        }
+        else {
+            Write-Log "Skipping invalid hash: $h" "WARN"
+        }
+    }
+    return $added
 }
 
 # ============================================================
@@ -196,67 +262,71 @@ function Invoke-MBLookup {
         Error        = ""
     }
 
-    $attempt  = 0
+    # --- Request with retry. Nothing throws out of this function: every
+    #     failure path returns a populated $result so the run continues. ---
     $response = $null
-    do {
+    $attempt  = 0
+    while ($true) {
         $attempt++
         try {
-            $body = @{
-                query = "get_info"
-                hash  = $Hash
-            }
-            $headers = @{
-                "Auth-Key"   = $Key
-                "User-Agent" = "ZavetSec-MBHashCheck/2.0 (github.com/zavetsec)"
-            }
+            $body = @{ query = "get_info"; hash = $Hash }
+            $headers = @{ "Auth-Key" = $Key; "User-Agent" = $UA }
             $response = Invoke-RestMethod `
-                -Uri $MB_API_URL `
-                -Method POST `
-                -Body $body `
-                -Headers $headers `
-                -ErrorAction Stop
-            break   # success
+                -Uri $MB_API_URL -Method POST -Body $body -Headers $headers -ErrorAction Stop
+            break
         }
         catch {
-            # Safely get HTTP status code - Response can be $null on network errors
-            $sc = 0
-            if ($_.Exception.Response -ne $null) {
-                $scProp = $_.Exception.Response.PSObject.Properties["StatusCode"]
-                if ($scProp) { $sc = [int]$scProp.Value }
+            $sc = Get-HttpStatus $_
+
+            # 401 / 403 -> bad or missing Auth-Key: fatal for the whole run
+            if ($sc -eq 401 -or $sc -eq 403) {
+                $result.Status = "AUTH_ERROR"
+                $result.Error  = "Auth-Key rejected (HTTP $sc)"
+                return $result
             }
-            # Do not retry on auth or not-found errors
-            if ($sc -eq 401 -or $sc -eq 404) { throw }
-            if ($attempt -ge $Retries) { throw }
-            Start-Sleep -Seconds $RetryDelay
+            # 429 or 5xx or transient network error -> retry
+            $retryable = ($sc -eq 429) -or ($sc -ge 500) -or ($sc -eq 0)
+            if ($retryable -and $attempt -le $Retries) {
+                Start-Sleep -Seconds $RetryDelay
+                continue
+            }
+            # give up gracefully
+            $result.Status = "ERROR"
+            $result.Error  = "Request failed (HTTP $sc): $($_.Exception.Message)"
+            return $result
         }
-    } while ($attempt -lt $Retries)
+    }
 
     try {
+        $qs = Get-Prop $response "query_status" ""
 
-        if ($response.query_status -eq "hash_not_found") {
-            $result.Status = "NOT_FOUND"
-            $result.Error  = "Not in MalwareBazaar database"
-            return $result
+        switch ($qs) {
+            { $_ -in @("unknown_auth_key", "unauthenticated", "auth_required") } {
+                $result.Status = "AUTH_ERROR"
+                $result.Error  = "Auth-Key invalid or missing ($qs)"
+                return $result
+            }
+            { $_ -in @("illegal_hash", "no_hash", "illegal_sha256_hash") } {
+                $result.Status = "ERROR"
+                $result.Error  = "Malformed hash rejected by API ($qs)"
+                return $result
+            }
+            { $_ -in @("hash_not_found", "no_results") } {
+                $result.Status = "NOT_FOUND"
+                $result.Error  = "Not in MalwareBazaar database"
+                return $result
+            }
         }
 
-        if ($response.query_status -eq "no_results") {
-            $result.Status = "NOT_FOUND"
-            $result.Error  = "No results"
-            return $result
-        }
-
-        if ($response.query_status -ne "ok" -or -not $response.data) {
+        if ($qs -ne "ok" -or -not $response.data) {
             $result.Status = "ERROR"
-            $result.Error  = "Unexpected response: $($response.query_status)"
+            $result.Error  = "Unexpected response: $qs"
             return $result
         }
 
         # data can be array or single object depending on PS JSON deserializer
-        if ($response.data -is [System.Array]) {
-            $d = $response.data[0]
-        } else {
-            $d = $response.data
-        }
+        if ($response.data -is [System.Array]) { $d = $response.data[0] }
+        else { $d = $response.data }
         if (-not $d) {
             $result.Status = "NOT_FOUND"
             $result.Error  = "Empty data in response"
@@ -264,7 +334,6 @@ function Invoke-MBLookup {
         }
 
         $result.Status    = "MALICIOUS"
-
         $result.SHA256    = Get-Prop $d "sha256_hash"
         $result.MD5       = Get-Prop $d "md5_hash"
         $result.SHA1      = Get-Prop $d "sha1_hash"
@@ -275,7 +344,8 @@ function Invoke-MBLookup {
         $result.FirstSeen = Get-Prop $d "first_seen"
         $result.LastSeen  = Get-Prop $d "last_seen"
         $result.Signature = Get-Prop $d "signature"
-        # Fallback: try popular_threat_classification if signature empty
+
+        # Fallback 1: popular_threat_classification -> suggested_threat_label
         if ($result.Signature -eq "N/A") {
             $ptcProp = $d.PSObject.Properties["popular_threat_classification"]
             if ($ptcProp -and $ptcProp.Value) {
@@ -307,7 +377,7 @@ function Invoke-MBLookup {
             $tagArr = @($tagsProp.Value)
             if ($tagArr.Count -gt 0) { $result.Tags = $tagArr -join ", " }
         }
-        # Fallback: vendor_intel -> any_run tags
+        # Fallback: vendor_intel -> ANY.RUN -> malware_family
         if ($result.Tags -eq "N/A") {
             $viProp = $d.PSObject.Properties["vendor_intel"]
             if ($viProp -and $viProp.Value) {
@@ -350,9 +420,6 @@ function Invoke-MBLookup {
         }
         if ($intelParts.Count -gt 0) { $result.Intelligence = $intelParts -join " | " }
 
-
-
-        # Update MBLink to SHA256
         if ($result.SHA256 -ne "N/A") {
             $result.MBLink = "https://bazaar.abuse.ch/sample/$($result.SHA256)/"
         }
@@ -372,78 +439,82 @@ function Invoke-ThreatFoxLookup {
     param([string]$Hash, [string]$Key)
 
     $tfResult = [PSCustomObject]@{
-        Found      = $false
-        IOCs       = [System.Collections.Generic.List[object]]::new()
-        Error      = ""
+        Found = $false
+        IOCs  = [System.Collections.Generic.List[object]]::new()
+        Error = ""
     }
 
     try {
-        $tfBody = "{`"query`":`"search_hash`",`"hash`":`"$Hash`"}"
+        $tfBody = @{ query = "search_hash"; hash = $Hash } | ConvertTo-Json -Compress
         $tfHeaders = @{
             "Auth-Key"     = $Key
             "Content-Type" = "application/json"
-            "User-Agent"   = "ZavetSec-MBHashCheck/2.0 (github.com/zavetsec)"
+            "User-Agent"   = $UA
         }
         $tfResp = Invoke-RestMethod `
-            -Uri $TF_API_URL `
-            -Method POST `
-            -Body $tfBody `
-            -Headers $tfHeaders `
-            -ErrorAction Stop
+            -Uri $TF_API_URL -Method POST -Body $tfBody -Headers $tfHeaders -ErrorAction Stop
 
-        if ($tfResp.query_status -ne "ok" -or -not $tfResp.data) {
-            return $tfResult
-        }
+        $qs = Get-Prop $tfResp "query_status" ""
+        if ($qs -ne "ok") { return $tfResult }
+
+        $dataProp = $tfResp.PSObject.Properties["data"]
+        if (-not $dataProp -or -not $dataProp.Value) { return $tfResult }
+        $dataArr = @($dataProp.Value)
+        if ($dataArr.Count -eq 0) { return $tfResult }
 
         $tfResult.Found = $true
         $seen = [System.Collections.Generic.HashSet[string]]::new()
 
-        foreach ($ioc in @($tfResp.data)) {
-            $iocVal  = $ioc.PSObject.Properties["ioc"];       $iocStr  = if ($iocVal)  { "$($iocVal.Value)" }  else { "N/A" }
-            $iocType = $ioc.PSObject.Properties["ioc_type"];  $typeStr = if ($iocType) { "$($iocType.Value)" } else { "N/A" }
-            $ttProp  = $ioc.PSObject.Properties["threat_type"]; $ttStr = if ($ttProp)  { "$($ttProp.Value)" }  else { "N/A" }
-            $malP    = $ioc.PSObject.Properties["malware_printable"]; $malStr = if ($malP) { "$($malP.Value)" } else { "N/A" }
-            $confP   = $ioc.PSObject.Properties["confidence_level"];  $confStr = if ($confP) { "$($confP.Value)" } else { "N/A" }
-            $refP    = $ioc.PSObject.Properties["reference"];  $refStr  = if ($refP -and $refP.Value) { "$($refP.Value)" } else { "" }
-            $fsP     = $ioc.PSObject.Properties["first_seen"]; $fsStr   = if ($fsP)   { "$($fsP.Value)" }  else { "N/A" }
-            $repP    = $ioc.PSObject.Properties["reporter"];   $repStr  = if ($repP)  { "$($repP.Value)" } else { "N/A" }
+        foreach ($ioc in $dataArr) {
+            $iocStr  = Get-Prop $ioc "ioc"
+            $typeStr = Get-Prop $ioc "ioc_type"
+            $ttStr   = Get-Prop $ioc "threat_type"
+            $malStr  = Get-Prop $ioc "malware_printable"
+            $confStr = Get-Prop $ioc "confidence_level" "0"
+            $fsStr   = Get-Prop $ioc "first_seen"
+            $repStr  = Get-Prop $ioc "reporter"
 
-            if (-not $seen.Add($iocStr)) { continue }  # dedup
+            if (-not $seen.Add($iocStr)) { continue }   # dedup
 
             $entry = [PSCustomObject]@{
-                IOC         = $iocStr
-                IOCType     = $typeStr
-                ThreatType  = $ttStr
-                Malware     = $malStr
-                Confidence  = $confStr
-                FirstSeen   = $fsStr
-                Reporter    = $repStr
-                Reference   = $refStr
-                GeoCountry  = "N/A"
-                GeoCC       = "N/A"
-                GeoCity     = "N/A"
-                ASN         = "N/A"
-                ISP         = "N/A"
-                TFLink      = "https://threatfox.abuse.ch/browse.php?search=ioc%3A$iocStr"
+                IOC        = $iocStr
+                IOCType    = $typeStr
+                ThreatType = $ttStr
+                Malware    = $malStr
+                Confidence = $confStr
+                FirstSeen  = $fsStr
+                Reporter   = $repStr
+                GeoCountry = "N/A"
+                GeoCC      = "N/A"
+                GeoCity    = "N/A"
+                ASN        = "N/A"
+                ISP        = "N/A"
+                TFLink     = "https://threatfox.abuse.ch/browse.php?search=ioc%3A$iocStr"
             }
 
-            # GeoIP only for IP-type IOCs
-            if ($typeStr -in @("ip:port", "ip") -or $iocStr -match '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}') {
-                $cleanIP = $iocStr -replace ':\d+$', ''   # strip port
+            # GeoIP only for IP-type IOCs, and only while not rate-limited
+            $isIP = ($typeStr -in @("ip:port", "ip")) -or ($iocStr -match '^\d{1,3}(\.\d{1,3}){3}')
+            if ($isIP -and -not $script:GeoIPDisabled) {
+                $cleanIP = ($iocStr -replace ':\d+$', '').Trim()
                 try {
                     $geo = Invoke-RestMethod `
-                        -Uri "http://ip-api.com/json/$cleanIP`?fields=status,country,countryCode,city,isp,as" `
+                        -Uri "$GEOIP_URL/$cleanIP`?fields=status,country,countryCode,city,isp,as" `
                         -Method GET -ErrorAction Stop
-                    if ($geo.status -eq "success") {
-                        $entry.GeoCountry = if ($geo.country)     { $geo.country }     else { "N/A" }
-                        $entry.GeoCC      = if ($geo.countryCode) { $geo.countryCode } else { "N/A" }
-                        $entry.GeoCity    = if ($geo.city)        { $geo.city }        else { "N/A" }
-                        $entry.ISP        = if ($geo.isp)         { $geo.isp }         else { "N/A" }
-                        $entry.ASN        = if ($geo.as)          { $geo.as }          else { "N/A" }
+                    if ((Get-Prop $geo "status" "") -eq "success") {
+                        $entry.GeoCountry = Get-Prop $geo "country"
+                        $entry.GeoCC      = Get-Prop $geo "countryCode"
+                        $entry.GeoCity    = Get-Prop $geo "city"
+                        $entry.ISP        = Get-Prop $geo "isp"
+                        $entry.ASN        = Get-Prop $geo "as"
                     }
-                    Start-Sleep -Milliseconds 350
+                    Start-Sleep -Milliseconds $GEOIP_DELAY_MS
                 }
-                catch { }
+                catch {
+                    if ((Get-HttpStatus $_) -eq 429) {
+                        $script:GeoIPDisabled = $true
+                        Write-Log "ip-api rate limit hit (45/min) - GeoIP disabled for the rest of this run." "WARN"
+                    }
+                }
             }
 
             $tfResult.IOCs.Add($entry)
@@ -464,7 +535,7 @@ function New-HtmlReport {
 
     $malCount  = @($Results | Where-Object { $_.Status -eq "MALICIOUS" }).Count
     $nfCount   = @($Results | Where-Object { $_.Status -eq "NOT_FOUND" }).Count
-    $errCount  = @($Results | Where-Object { $_.Status -eq "ERROR" }).Count
+    $errCount  = @($Results | Where-Object { $_.Status -eq "ERROR" -or $_.Status -eq "AUTH_ERROR" }).Count
     $total     = @($Results).Count
     $reportTs  = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 
@@ -481,13 +552,26 @@ function New-HtmlReport {
             default     { "<span class='badge badge-err'>&#33; ERROR</span>" }
         }
 
+        # All API-derived values are HTML-escaped before insertion.
+        $eHash      = ConvertTo-HtmlSafe $r.Hash
+        $eHashType  = ConvertTo-HtmlSafe $r.HashType
+        $eFileName  = ConvertTo-HtmlSafe $r.FileName
+        $eFileType  = ConvertTo-HtmlSafe $r.FileType
+        $eFileSize  = ConvertTo-HtmlSafe $r.FileSize
+        $eFirstSeen = ConvertTo-HtmlSafe $r.FirstSeen
+        $eSHA256    = ConvertTo-HtmlSafe $r.SHA256
+        $eSHA1      = ConvertTo-HtmlSafe $r.SHA1
+        $eMD5       = ConvertTo-HtmlSafe $r.MD5
+        $eMBLink    = ConvertTo-HtmlSafe $r.MBLink
+
         $shortHash = if ($r.Hash.Length -ge 16) {
             $r.Hash.Substring(0,8) + "..." + $r.Hash.Substring($r.Hash.Length - 8)
         } else { $r.Hash }
+        $shortHash = ConvertTo-HtmlSafe $shortHash
 
         $tagsHtml = ""
         if ($r.Tags -ne "N/A") {
-            $tagItems = $r.Tags -split ", " | ForEach-Object { "<span class='tag'>$_</span>" }
+            $tagItems = $r.Tags -split ", " | ForEach-Object { "<span class='tag'>$(ConvertTo-HtmlSafe $_)</span>" }
             $tagsHtml = $tagItems -join " "
         } else { $tagsHtml = "<span class='dim'>-</span>" }
 
@@ -497,33 +581,33 @@ function New-HtmlReport {
 <details>
 <summary class='sum-hashes'>All Hashes</summary>
 <div class='hash-detail'>
-  <span class='hl'>SHA256:</span> <span class='hv'>$($r.SHA256)</span><br>
-  <span class='hl'>SHA1:</span>   <span class='hv'>$($r.SHA1)</span><br>
-  <span class='hl'>MD5:</span>    <span class='hv'>$($r.MD5)</span>
+  <span class='hl'>SHA256:</span> <span class='hv'>$eSHA256</span><br>
+  <span class='hl'>SHA1:</span>   <span class='hv'>$eSHA1</span><br>
+  <span class='hl'>MD5:</span>    <span class='hv'>$eMD5</span>
 </div>
 </details>
 "@
         }
 
-        $intelDisp = if ($r.Intelligence -ne "N/A") { $r.Intelligence } else { "<span class='dim'>-</span>" }
-        $sigDisp   = if ($r.Signature -ne "N/A") { "<span class='sig'>$($r.Signature)</span>" } else { "<span class='dim'>-</span>" }
-        $errDisp   = if ($r.Error) { "<span class='err-msg'>$($r.Error)</span>" } else { "" }
+        $intelDisp = if ($r.Intelligence -ne "N/A") { ConvertTo-HtmlSafe $r.Intelligence } else { "<span class='dim'>-</span>" }
+        $sigDisp   = if ($r.Signature -ne "N/A") { "<span class='sig'>$(ConvertTo-HtmlSafe $r.Signature)</span>" } else { "<span class='dim'>-</span>" }
+        $errDisp   = if ($r.Error) { "<span class='err-msg'>$(ConvertTo-HtmlSafe $r.Error)</span>" } else { "" }
 
         $rowsHtml += @"
         <tr class="$statusClass">
             <td class="hash-cell">
-                <a href="$($r.MBLink)" target="_blank" class="vt-link" title="$($r.Hash)">$shortHash</a>
-                <span class="htag">$($r.HashType)</span>
+                <a href="$eMBLink" target="_blank" class="vt-link" title="$eHash">$shortHash</a>
+                <span class="htag">$eHashType</span>
                 $hashesDetail
             </td>
             <td>$badge$errDisp</td>
             <td>
-                <span class="fname">$($r.FileName)</span><br>
-                <span class="dim small">$($r.FileType) | $($r.FileSize)</span>
+                <span class="fname">$eFileName</span><br>
+                <span class="dim small">$eFileType &nbsp;|&nbsp; $eFileSize</span>
             </td>
             <td>$sigDisp</td>
             <td>$tagsHtml</td>
-            <td><span class="dim small">$($r.FirstSeen)</span></td>
+            <td><span class="dim small">$eFirstSeen</span></td>
             <td class="intel-cell">$intelDisp</td>
         </tr>
 "@
@@ -633,7 +717,7 @@ details summary.sum-hashes{cursor:pointer;color:var(--accent);font-size:10px;mar
   <div class="meta">
     Generated: <strong>$reportTs</strong> &nbsp;|&nbsp;
     Total hashes: <strong>$total</strong> &nbsp;|&nbsp;
-    Source: <strong>MalwareBazaar (abuse.ch)</strong>
+    Source: <strong>MalwareBazaar + ThreatFox (abuse.ch)</strong>
   </div>
 </div>
 
@@ -647,7 +731,7 @@ details summary.sum-hashes{cursor:pointer;color:var(--accent);font-size:10px;mar
 <div class="container">
   <div class="notice">
     <strong>&#9888; Note:</strong>
-    NOT IN DB means the hash was not found in MalwareBazaar — this does not mean the file is clean.
+    NOT IN DB means the hash was not found in MalwareBazaar &mdash; this does not mean the file is clean.
     MalwareBazaar only indexes known malware samples. Cross-reference with additional threat intelligence sources for a complete picture.
   </div>
 
@@ -728,7 +812,7 @@ function fs(){
   var q=document.getElementById('srch').value.toLowerCase();
   gr().forEach(function(r){r.style.display=(!q||r.textContent.toLowerCase().includes(q))?'':'none';});
 }
-// ThreatFox IOC data injected by PowerShell
+// ThreatFox IOC data injected by PowerShell (string fields are HTML-escaped server-side)
 var tfData = TF_DATA_PLACEHOLDER;
 (function(){
   if(!tfData||!tfData.length){return;}
@@ -739,14 +823,14 @@ var tfData = TF_DATA_PLACEHOLDER;
     var isIP=r.ioc_type==='ip:port'||r.ioc_type==='ip';
     var cleanIP=r.ioc.replace(/:\d+$/,'');
     if(isIP){
-      iocCell='<a href="https://www.shodan.io/host/'+cleanIP+'" target="_blank" class="vt-link">'+r.ioc+'</a>';
+      iocCell='<a href="https://www.shodan.io/host/'+encodeURIComponent(cleanIP)+'" target="_blank" class="vt-link">'+r.ioc+'</a>';
     } else if(r.ioc_type==='domain'||r.ioc_type==='url'){
       iocCell='<a href="'+r.tf_link+'" target="_blank" class="vt-link">'+r.ioc+'</a>';
     } else {
       iocCell=r.ioc;
     }
     var flag='';
-    if(r.geo_cc&&r.geo_cc!='N/A'){
+    if(r.geo_cc&&r.geo_cc!='N/A'&&/^[a-zA-Z]{2}$/.test(r.geo_cc)){
       flag='<img src="https://flagcdn.com/16x12/'+r.geo_cc.toLowerCase()+'.png" style="margin-right:5px;vertical-align:middle;">';
     }
     var geo=r.geo_country!='N/A'?flag+r.geo_country+(r.geo_city!='N/A'?', '+r.geo_city:''):'<span class="dim">-</span>';
@@ -768,33 +852,49 @@ var tfData = TF_DATA_PLACEHOLDER;
 
     $html = $html.Replace('PLACEHOLDER_JS', $jsBlock)
 
-    # Build ThreatFox IOC JSON for injection into HTML
-    $allTF = [System.Collections.Generic.List[string]]::new()
+    # --- Build ThreatFox IOC JSON via ConvertTo-Json (handles quotes,
+    #     backslashes, control chars). String fields are HTML-escaped so they
+    #     are safe when the JS injects them via innerHTML. ---
+    $tfObjects = [System.Collections.Generic.List[object]]::new()
     foreach ($r in $Results) {
         if ($r.TFIOCs -and @($r.TFIOCs).Count -gt 0) {
             foreach ($ioc in @($r.TFIOCs)) {
-                function EscJ($v) { "$v" -replace '\\','\\' -replace '"','"' }
-                $j = "{`"ioc`":`"$(EscJ $ioc.IOC)`"," +
-                     "`"ioc_type`":`"$(EscJ $ioc.IOCType)`"," +
-                     "`"threat_type`":`"$(EscJ $ioc.ThreatType)`"," +
-                     "`"malware`":`"$(EscJ $ioc.Malware)`"," +
-                     "`"confidence`":$($ioc.Confidence -replace '[^\d]','')," +
-                     "`"geo_country`":`"$(EscJ $ioc.GeoCountry)`"," +
-                     "`"geo_cc`":`"$(EscJ $ioc.GeoCC)`"," +
-                     "`"geo_city`":`"$(EscJ $ioc.GeoCity)`"," +
-                     "`"asn`":`"$(EscJ $ioc.ASN)`"," +
-                     "`"isp`":`"$(EscJ $ioc.ISP)`"," +
-                     "`"first_seen`":`"$(EscJ $ioc.FirstSeen)`"," +
-                     "`"reporter`":`"$(EscJ $ioc.Reporter)`"," +
-                     "`"tf_link`":`"$(EscJ $ioc.TFLink)`"}"
-                $allTF.Add($j)
+                $conf = 0
+                if ("$($ioc.Confidence)" -match '^\d+$') { $conf = [int]$ioc.Confidence }
+                $tfObjects.Add([ordered]@{
+                    ioc         = (ConvertTo-HtmlSafe $ioc.IOC)
+                    ioc_type    = (ConvertTo-HtmlSafe $ioc.IOCType)
+                    threat_type = (ConvertTo-HtmlSafe $ioc.ThreatType)
+                    malware     = (ConvertTo-HtmlSafe $ioc.Malware)
+                    confidence  = $conf
+                    geo_country = (ConvertTo-HtmlSafe $ioc.GeoCountry)
+                    geo_cc      = (ConvertTo-HtmlSafe $ioc.GeoCC)
+                    geo_city    = (ConvertTo-HtmlSafe $ioc.GeoCity)
+                    asn         = (ConvertTo-HtmlSafe $ioc.ASN)
+                    isp         = (ConvertTo-HtmlSafe $ioc.ISP)
+                    first_seen  = (ConvertTo-HtmlSafe $ioc.FirstSeen)
+                    reporter    = (ConvertTo-HtmlSafe $ioc.Reporter)
+                    tf_link     = (ConvertTo-HtmlSafe $ioc.TFLink)
+                })
             }
         }
     }
-    $tfJson = if ($allTF.Count -gt 0) { "[" + ($allTF -join ",") + "]" } else { "[]" }
+
+    if ($tfObjects.Count -gt 0) {
+        $tfJson = ConvertTo-Json -InputObject $tfObjects.ToArray() -Depth 4 -Compress
+        if ($tfJson -notmatch '^\s*\[') { $tfJson = "[$tfJson]" }   # single item -> wrap as array
+    } else {
+        $tfJson = "[]"
+    }
+    # Neutralize any literal </script> that could close the script tag early.
+    $tfJson = $tfJson -replace '</', '<\/'
+
     $html = $html.Replace('TF_DATA_PLACEHOLDER', $tfJson)
 
-    $html | Out-File -FilePath $OutputPath -Encoding UTF8
+    # UTF-8 without BOM. Out-File -Encoding UTF8 on Windows PowerShell 5.1
+    # prepends a BOM and can mangle non-ASCII in here-strings.
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($OutputPath, $html, $utf8NoBom)
 }
 
 # ============================================================
@@ -820,40 +920,33 @@ if (-not $ApiKey) {
 $hashList = [System.Collections.Generic.List[string]]::new()
 
 foreach ($h in $Hashes) {
-    $h = $h.Trim()
-    if ($h -and (Test-HashFormat $h)) { $hashList.Add($h.ToLower()) }
+    $h = $h.Trim().ToLower()
+    if ($h -and (Test-HashFormat $h)) {
+        if (-not $hashList.Contains($h)) { $hashList.Add($h) }
+    }
 }
 
 if ($HashFile) {
-    if (-not (Test-Path $HashFile)) {
+    if (-not (Test-Path -LiteralPath $HashFile)) {
         Write-Log "Hash file not found: $HashFile" "ERROR"
         exit 1
     }
-    $lines = Get-Content $HashFile | Where-Object { $_.Trim() -ne "" -and $_ -notmatch "^#" }
-    foreach ($line in $lines) {
-        $h = $line.Trim().ToLower()
-        if (Test-HashFormat $h) {
-            if (-not $hashList.Contains($h)) { $hashList.Add($h) }
-        }
-        else {
-            Write-Log "Skipping invalid hash: $h" "WARN"
-        }
-    }
+    [void](Import-HashFile -Path $HashFile -Target $hashList)
 }
 
 # From directory scan
 if ($ScanDirectory) {
-    if (-not (Test-Path $ScanDirectory)) {
+    if (-not (Test-Path -LiteralPath $ScanDirectory)) {
         Write-Log "Directory not found: $ScanDirectory" "ERROR"
         exit 1
     }
     $getParams = @{ Path = $ScanDirectory; File = $true }
     if ($Recurse) { $getParams['Recurse'] = $true }
     $files = Get-ChildItem @getParams -ErrorAction SilentlyContinue
-    Write-Log "Hashing $($files.Count) file(s) in: $ScanDirectory" "INFO"
+    Write-Log "Hashing $(@($files).Count) file(s) in: $ScanDirectory" "INFO"
     foreach ($f in $files) {
         try {
-            $sha = (Get-FileHash -Path $f.FullName -Algorithm SHA256 -ErrorAction Stop).Hash.ToLower()
+            $sha = (Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256 -ErrorAction Stop).Hash.ToLower()
             if (-not $hashList.Contains($sha)) {
                 $hashList.Add($sha)
                 Write-Log "Hashed: $($f.Name) -> $sha" "OK"
@@ -865,6 +958,28 @@ if ($ScanDirectory) {
     }
 }
 
+# --- Interactive input (nothing provided on the command line) ---
+if ($hashList.Count -eq 0) {
+    Write-Host ""
+    Write-Host "  No hashes provided. Choose an input method:" -ForegroundColor Cyan
+    Write-Host "    1) Load from a text file (.txt, one hash per line)" -ForegroundColor DarkGray
+    Write-Host "    2) Type hashes manually" -ForegroundColor DarkGray
+    Write-Host ""
+
+    $fp = Read-Host "  Path to hash file (.txt), or press Enter to type manually"
+    if ($fp) {
+        $fp = $fp.Trim().Trim('"').Trim("'")   # strip drag-and-drop quotes
+        if (Test-Path -LiteralPath $fp) {
+            $n = Import-HashFile -Path $fp -Target $hashList
+            Write-Log "Loaded $n valid hash(es) from file." "OK"
+        }
+        else {
+            Write-Log "File not found: $fp" "ERROR"
+        }
+    }
+}
+
+# Still nothing -> manual entry loop
 if ($hashList.Count -eq 0) {
     Write-Host ""
     Write-Host "  Enter hashes to check (MD5 / SHA1 / SHA256)." -ForegroundColor Cyan
@@ -891,7 +1006,7 @@ if ($hashList.Count -eq 0) {
 
 Write-Host ""
 Write-Log "Loaded $($hashList.Count) hash(es) for analysis." "HEAD"
-Write-Log "Source: MalwareBazaar (abuse.ch) | Auth-Key: ....$($ApiKey.Substring([Math]::Max(0,$ApiKey.Length-4)))" "INFO"
+Write-Log "Source: MalwareBazaar + ThreatFox (abuse.ch) | Auth-Key: ....$($ApiKey.Substring([Math]::Max(0,$ApiKey.Length-4)))" "INFO"
 Write-Host ("-" * 54) -ForegroundColor DarkGray
 Write-Host ""
 
@@ -912,28 +1027,38 @@ foreach ($hash in $hashList) {
     Write-Host " ... " -NoNewline
 
     $res = Invoke-MBLookup -Hash $hash -Key $ApiKey -Retries $MaxRetries -RetryDelay $RetryDelaySeconds
-    # ThreatFox IOC lookup for all MALICIOUS hits
+
+    # A bad Auth-Key affects every request - stop now and still write a report.
+    if ($res.Status -eq "AUTH_ERROR") {
+        $results.Add($res)
+        if ($PassThru) { Write-Output $res }
+        Write-Host "[AUTH_ERROR]" -ForegroundColor Red
+        Write-Host ""
+        Write-Log "Auth-Key rejected: $($res.Error)" "ERROR"
+        Write-Log "Get a valid free key at https://auth.abuse.ch and retry." "WARN"
+        break
+    }
+
+    # ThreatFox IOC lookup for MALICIOUS hits
     if ($res.Status -eq "MALICIOUS") {
         Write-Host "  [TF] " -ForegroundColor DarkMagenta -NoNewline
         Write-Host "Querying ThreatFox for related IOCs..." -ForegroundColor Gray
-        # Use SHA256 if available, fallback to MD5, then SHA1
         $tfHash = if ($res.SHA256 -ne "N/A") { $res.SHA256 }
                   elseif ($res.MD5 -ne "N/A")  { $res.MD5 }
                   elseif ($res.SHA1 -ne "N/A") { $res.SHA1 }
                   else                          { $res.Hash }
         $tfResult = Invoke-ThreatFoxLookup -Hash $tfHash -Key $ApiKey
-        # If SHA256 lookup failed and original hash differs, try original too
         if (-not $tfResult.Found -and $res.Hash -ne $tfHash) {
             $tfResult = Invoke-ThreatFoxLookup -Hash $res.Hash -Key $ApiKey
         }
         if ($tfResult.Found -and $tfResult.IOCs.Count -gt 0) {
             $res.TFIOCs     = @($tfResult.IOCs)
             $res.TFEnriched = $true
-            $ipCount = @($tfResult.IOCs | Where-Object { $_.IOCType -in @("ip:port","ip") }).Count
+            $ipCount  = @($tfResult.IOCs | Where-Object { $_.IOCType -in @("ip:port","ip") }).Count
             $domCount = @($tfResult.IOCs | Where-Object { $_.IOCType -eq "domain" }).Count
             Write-Host "      Found $($tfResult.IOCs.Count) IOC(s)" -ForegroundColor DarkMagenta -NoNewline
-            if ($ipCount -gt 0)  { Write-Host " | $ipCount IP/port"  -ForegroundColor DarkMagenta -NoNewline }
-            if ($domCount -gt 0) { Write-Host " | $domCount domain"  -ForegroundColor DarkMagenta -NoNewline }
+            if ($ipCount -gt 0)  { Write-Host " | $ipCount IP/port" -ForegroundColor DarkMagenta -NoNewline }
+            if ($domCount -gt 0) { Write-Host " | $domCount domain" -ForegroundColor DarkMagenta -NoNewline }
             Write-Host ""
         } elseif ($tfResult.Error) {
             Write-Host "      ThreatFox error: $($tfResult.Error)" -ForegroundColor DarkGray
@@ -951,30 +1076,26 @@ foreach ($hash in $hashList) {
         default     { "Yellow" }
     }
 
-    if ($Quiet -and $res.Status -notin @("MALICIOUS","SUSPICIOUS","ERROR")) {
-        continue
-    }
-    Write-Host "[$($res.Status)]" -ForegroundColor $col -NoNewline
-
-    if ($res.Status -eq "MALICIOUS") {
-        # Show signature (primary label), then tags only if different from signature
-        if ($res.Signature -ne "N/A") {
-            Write-Host "  $($res.Signature)" -ForegroundColor Red -NoNewline
-            if ($res.Tags -ne "N/A" -and $res.Tags -ne $res.Signature) {
-                # Show tags but trim any that duplicate the signature
-                $filteredTags = ($res.Tags -split ", " | Where-Object { $_ -ne $res.Signature }) -join ", "
-                if ($filteredTags) {
-                    Write-Host "  | $filteredTags" -ForegroundColor DarkGray -NoNewline
+    if (-not ($Quiet -and $res.Status -notin @("MALICIOUS","ERROR"))) {
+        Write-Host "[$($res.Status)]" -ForegroundColor $col -NoNewline
+        if ($res.Status -eq "MALICIOUS") {
+            if ($res.Signature -ne "N/A") {
+                Write-Host "  $($res.Signature)" -ForegroundColor Red -NoNewline
+                if ($res.Tags -ne "N/A" -and $res.Tags -ne $res.Signature) {
+                    $filteredTags = ($res.Tags -split ", " | Where-Object { $_ -ne $res.Signature }) -join ", "
+                    if ($filteredTags) {
+                        Write-Host "  | $filteredTags" -ForegroundColor DarkGray -NoNewline
+                    }
                 }
+            } elseif ($res.Tags -ne "N/A") {
+                Write-Host "  $($res.Tags)" -ForegroundColor DarkGray -NoNewline
             }
-        } elseif ($res.Tags -ne "N/A") {
-            Write-Host "  $($res.Tags)" -ForegroundColor DarkGray -NoNewline
         }
+        elseif ($res.Error) {
+            Write-Host "  $($res.Error)" -ForegroundColor DarkGray -NoNewline
+        }
+        Write-Host ""
     }
-    elseif ($res.Error) {
-        Write-Host "  $($res.Error)" -ForegroundColor DarkGray -NoNewline
-    }
-    Write-Host ""
 
     if ($idx -lt $hashList.Count) { Start-Sleep -Milliseconds $DELAY_MS }
 }
@@ -986,18 +1107,19 @@ Write-Host ""
 Write-Host ("-" * 54) -ForegroundColor DarkGray
 $malC  = @($results | Where-Object { $_.Status -eq "MALICIOUS" }).Count
 $nfC   = @($results | Where-Object { $_.Status -eq "NOT_FOUND" }).Count
-$errC  = @($results | Where-Object { $_.Status -eq "ERROR" }).Count
+$errC  = @($results | Where-Object { $_.Status -eq "ERROR" -or $_.Status -eq "AUTH_ERROR" }).Count
 $total = @($results).Count
 
-$tfCount = @($results | Where-Object { $_.TFEnriched -eq $true }).Count
+$tfCount    = @($results | Where-Object { $_.TFEnriched -eq $true }).Count
 $tfIOCTotal = ($results | ForEach-Object { if ($_.TFIOCs) { @($_.TFIOCs).Count } else { 0 } } | Measure-Object -Sum).Sum
+
 Write-Log "Analysis complete." "HEAD"
-Write-Host "  Total:       " -NoNewline; Write-Host $total   -ForegroundColor Cyan
-Write-Host "  MALICIOUS:   " -NoNewline; Write-Host $malC    -ForegroundColor Red
-Write-Host "  NOT IN DB:   " -NoNewline; Write-Host $nfC     -ForegroundColor DarkGray
-Write-Host "  Errors:      " -NoNewline; Write-Host $errC    -ForegroundColor Yellow
-Write-Host "  ThreatFox hits:" -NoNewline; Write-Host $tfCount    -ForegroundColor Magenta
-Write-Host "  TF IOCs total:" -NoNewline; Write-Host $tfIOCTotal -ForegroundColor Magenta
+Write-Host "  Total:          " -NoNewline; Write-Host $total      -ForegroundColor Cyan
+Write-Host "  MALICIOUS:      " -NoNewline; Write-Host $malC       -ForegroundColor Red
+Write-Host "  NOT IN DB:      " -NoNewline; Write-Host $nfC        -ForegroundColor DarkGray
+Write-Host "  Errors:         " -NoNewline; Write-Host $errC       -ForegroundColor Yellow
+Write-Host "  ThreatFox hits: " -NoNewline; Write-Host $tfCount    -ForegroundColor Magenta
+Write-Host "  TF IOCs total:  " -NoNewline; Write-Host $tfIOCTotal -ForegroundColor Magenta
 Write-Host ""
 Write-Host "  [!] NOT IN DB != CLEAN  MalwareBazaar indexes known malware only." -ForegroundColor Yellow
 Write-Host "      Cross-reference with additional threat intelligence sources for full coverage." -ForegroundColor DarkGray
@@ -1015,3 +1137,5 @@ catch {
     Write-Log "Failed to save report: $($_.Exception.Message)" "ERROR"
 }
 Write-Host ""
+
+if ($PassThru) { $results }
